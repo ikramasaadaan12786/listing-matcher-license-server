@@ -21,10 +21,19 @@
 # from Stripe (needs STRIPE_SECRET_KEY). Trial credits do NOT
 # survive a wipe — that is by design (they are a free trial).
 #
-# Secrets: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET — env vars
-# only, never in code. No passwords are stored (signup is email
-# only). No real owner data anywhere in this repo.
+# v1.1.0: admin panel (GET /admin) — the owner sees every
+# user and can create a license manually when someone pays
+# outside Stripe (cash / bank transfer). Admin auth is the
+# ADMIN_PASSWORD env var; when it is unset /admin returns 404.
+# Secrets: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+# ADMIN_PASSWORD — env vars only, never in code. No passwords
+# are stored (signup is email only). No real owner data
+# anywhere in this repo.
 
+import csv
+import hmac
+import html
+import io
 import json
 import os
 import re
@@ -33,7 +42,8 @@ import sqlite3
 import string
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import (Flask, Response, abort, jsonify, redirect, request,
+                   send_from_directory, session)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -57,6 +67,11 @@ VERSION = _read_version()
 
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+
+# Admin panel password (v1.1.0). The owner sets this on Render;
+# it is never hardcoded, logged or returned. When unset, /admin
+# returns 404 (the feature is off).
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "").strip()
 
 DATA_DIR = os.environ.get("DATA_DIR", "").strip()
 if DATA_DIR:
@@ -383,6 +398,15 @@ def create_license(conn, email, plan, stripe_session_id=None):
 
 app = Flask(__name__)
 
+# Signed session cookie for the admin panel. SESSION_SECRET is
+# optional: when unset, a random key is generated at boot and
+# admin sessions simply do not survive a restart (the owner
+# logs in again). The cookie is HttpOnly + SameSite=Lax.
+app.secret_key = (os.environ.get("SESSION_SECRET", "").strip()
+                  or secrets.token_hex(32))
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
 
 @app.route("/")
 def index():
@@ -396,6 +420,8 @@ for the Listing Matcher desktop / Android apps.</p>
 <li><a href="/api/version">GET /api/version</a> — server version</li>
 <li><a href="/api/app-version">GET /api/app-version</a> — app releases (auto-update)</li>
 <li><a href="/api/health">GET /api/health</a></li>
+<li><a href="/admin">/admin</a> — owner panel: user management
++ manual licenses (needs ADMIN_PASSWORD)</li>
 </ul>
 <p>Clients: Windows, macOS, Android. No data is stored here
 except accounts, trial credits and licenses.</p>
@@ -818,6 +844,380 @@ def success():
     return ("<!doctype html><html><head><meta charset='utf-8'>"
             "<title>Listing Matcher — Payment</title></head>"
             "<body>%s</body></html>" % body)
+
+
+# ------------------------------------------------------------------
+# Admin panel — user management + manual licenses (v1.1.0)
+#
+# GET /admin — dashboard (login form when not authed).
+# POST /admin/login — form or JSON {password}.
+# GET /admin/logout — clears the session.
+# POST /api/admin/create-license {email, plan_id} — manual
+#   license (cash / bank-transfer customers). Reuses
+#   create_license() with stripe_session_id=None, so the key
+#   activates exactly like a Stripe license (email-only
+#   activation or key entry in the app).
+# POST /api/admin/revoke-license {license_key} — expires a
+#   license immediately (sets expires_at to now).
+# GET /api/admin/export — CSV of all accounts + their license.
+#
+# Auth: ADMIN_PASSWORD env var (owner sets it on Render).
+# When unset, /admin returns 404 (feature off). Wrong password
+# -> 401, no hint. The admin session is a signed Flask session
+# cookie. No password is ever logged or returned.
+# ------------------------------------------------------------------
+
+def _admin_enabled():
+    return bool(ADMIN_PASSWORD)
+
+
+def _admin_authed():
+    return session.get("admin") is True
+
+
+def _require_admin():
+    """None when the caller is the admin; otherwise the Flask
+    response to return (404 when the feature is off, 401 when
+    not logged in)."""
+    if not _admin_enabled():
+        abort(404)
+    if not _admin_authed():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    return None
+
+
+def _license_status_label(row):
+    """trial (no license) / active (valid + bound) /
+    not_activated (valid, never bound) / expired."""
+    if row is None:
+        return "trial"
+    if license_is_valid(row):
+        return "active" if row["bound_machine_id"] else "not_activated"
+    return "expired"
+
+
+def _esc(value):
+    return html.escape("" if value is None else str(value),
+                       quote=True)
+
+
+def _admin_login_page(error=False):
+    msg = ("<p style='color:red'>Wrong password.</p>"
+           if error else "")
+    return ("<!doctype html><html><head><meta charset='utf-8'>"
+            "<title>Listing Matcher — Admin login</title></head><body>"
+            "<h1>Listing Matcher — Admin</h1>" + msg +
+            "<form method='post' action='/admin/login'>"
+            "<label>Admin password<br>"
+            "<input type='password' name='password' autofocus>"
+            "</label><br><br>"
+            "<button type='submit'>Sign in</button></form>"
+            "</body></html>")
+
+
+@app.route("/admin")
+def admin():
+    if not _admin_enabled():
+        abort(404)
+    if not _admin_authed():
+        return _admin_login_page()
+    return _admin_dashboard(request.args.get("q", "").strip())
+
+
+@app.route("/admin/login", methods=["POST"])
+def admin_login():
+    if not _admin_enabled():
+        abort(404)
+    data = request.get_json(silent=True) or {}
+    pw = data.get("password") or request.form.get("password") or ""
+    if not pw or not hmac.compare_digest(pw, ADMIN_PASSWORD):
+        if request.is_json:
+            return jsonify({"ok": False,
+                            "error": "unauthorized"}), 401
+        return _admin_login_page(error=True), 401
+    session["admin"] = True
+    if request.is_json:
+        return jsonify({"ok": True})
+    return redirect("/admin")
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.clear()
+    return redirect("/admin")
+
+
+def _admin_dashboard(query):
+    conn = db()
+    try:
+        accounts = conn.execute(
+            "SELECT * FROM accounts ORDER BY created_at DESC"
+            ).fetchall()
+        licenses = conn.execute(
+            "SELECT * FROM licenses ORDER BY created_at DESC"
+            ).fetchall()
+    finally:
+        conn.close()
+
+    # --- stats -------------------------------------------------
+    total_accounts = len(accounts)
+    lic_emails = {r["email"] for r in licenses}
+    valid_emails = {r["email"] for r in licenses
+                    if license_is_valid(r)}
+    trial_only = sum(1 for a in accounts
+                     if a["email"] not in lic_emails)
+    licensed = len(valid_emails)
+    # Trial credits used = sum of (5 - credits left). Every
+    # account starts at 5 and credits only ever decrease, so
+    # this is exact — labelled as such on the page.
+    trial_used = sum(max(0, TRIAL_CREDITS - (a["credits"] or 0))
+                     for a in accounts)
+
+    # Latest license per email (same rule as
+    # find_license_for_email: most recent valid, else most
+    # recent of any status). licenses are already newest-first.
+    by_email = {}
+    for row in licenses:
+        by_email.setdefault(row["email"], []).append(row)
+
+    def latest_license(email):
+        rows = by_email.get(email, [])
+        for row in rows:
+            if license_is_valid(row):
+                return row
+        return rows[0] if rows else None
+
+    # --- users table ------------------------------------------
+    q = (query or "").strip().lower()
+    shown = [a for a in accounts
+             if not q or q in a["email"].lower()][:500]
+    user_rows = []
+    for a in shown:
+        lic = latest_license(a["email"])
+        if lic:
+            lic_txt = ("%s — %s — expires %s"
+                       % (_esc(lic["plan_name"] or lic["plan_id"]),
+                          _license_status_label(lic),
+                          _esc(lic["expires_at"] or "never")))
+        else:
+            lic_txt = "trial — no license"
+        user_rows.append(
+            "<tr><td>%s</td><td>%s<br><small>%s</small></td>"
+            "<td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+            % (_esc(a["email"]),
+               _esc(a["machine_id"]), _esc(a["device_name"] or ""),
+               _esc(a["credits"]), lic_txt,
+               _esc(a["created_at"]), _esc(a["updated_at"])))
+
+    # --- licenses table ---------------------------------------
+    lic_rows = []
+    for row in licenses[:200]:
+        status = _license_status_label(row)
+        revoke = ("<button class='revoke' data-key='%s'>Revoke"
+                  "</button>" % _esc(row["license_key"])
+                  if status != "expired" else "—")
+        lic_rows.append(
+            "<tr><td><code>%s</code></td><td>%s</td><td>%s</td>"
+            "<td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+            % (_esc(row["license_key"]), _esc(row["email"]),
+               _esc(row["plan_name"] or row["plan_id"]),
+               _esc(row["expires_at"] or "never"),
+               _esc(row["bound_machine_id"] or "—"),
+               _esc(row["created_at"]), revoke))
+
+    # --- create-license form ----------------------------------
+    plan_options = "".join(
+        "<option value='%s'>%s — AED %s</option>"
+        % (_esc(p["id"]), _esc(p.get("name") or p["id"]),
+           _esc(p.get("price_aed")))
+        for p in load_plans().get("plans", []))
+
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>Listing Matcher — Admin</title></head><body>"
+        "<h1>Listing Matcher — Admin</h1>"
+        "<p><a href='/admin/logout'>Sign out</a> | "
+        "<a href='/api/admin/export'>Download users CSV</a></p>"
+        "<p><b>Total accounts:</b> %d &nbsp; "
+        "<b>Trial-only:</b> %d &nbsp; "
+        "<b>Licensed:</b> %d &nbsp; "
+        "<b>Trial credits used:</b> %d "
+        "<small>(5 − credits left, summed over accounts)</small></p>"
+        "<h2>Create a manual license</h2>"
+        "<p>For a customer who paid outside Stripe (cash / bank "
+        "transfer). The key activates exactly like a Stripe "
+        "license — the customer enters their email (or the key) "
+        "in the app.</p>"
+        "<form id='mklic'>"
+        "<input name='email' type='email' required size='30' "
+        "placeholder='customer@email.com'> "
+        "<select name='plan_id'>%s</select> "
+        "<button type='submit'>Create license</button></form>"
+        "<div id='newkey' style='display:none;border:1px solid #888;"
+        "padding:10px;margin:10px 0'>"
+        "<p>License key — send this to the customer:</p>"
+        "<h2 id='keyval' style='font-family:monospace'></h2>"
+        "<p id='keymeta'></p><p id='keyerr' style='color:red'></p>"
+        "<button type='button' onclick='copyKey()'>Copy key"
+        "</button></div>"
+        "<h2>Users</h2>"
+        "<form method='get' action='/admin'>"
+        "<input name='q' value='%s' placeholder='search by email'> "
+        "<button type='submit'>Search</button></form>"
+        "<p>Showing %d of %d accounts (newest first).</p>"
+        "<table border='1' cellpadding='5' cellspacing='0'>"
+        "<tr><th>Email</th><th>Machine / Device</th>"
+        "<th>Credits left</th><th>License</th><th>Signed up</th>"
+        "<th>Last updated</th></tr>%s</table>"
+        "<h2>Licenses</h2>"
+        "<table border='1' cellpadding='5' cellspacing='0'>"
+        "<tr><th>License key</th><th>Email</th><th>Plan</th>"
+        "<th>Expires</th><th>Bound machine</th><th>Created</th>"
+        "<th></th></tr>%s</table>"
+        "<script>"
+        "async function postJSON(path, body) {"
+        "  const r = await fetch(path, {method: 'POST',"
+        "    headers: {'Content-Type': 'application/json'},"
+        "    body: JSON.stringify(body)});"
+        "  return r.json();"
+        "}"
+        "document.getElementById('mklic').addEventListener('submit',"
+        " async (e) => {"
+        "  e.preventDefault();"
+        "  const f = e.target;"
+        "  const b = await postJSON('/api/admin/create-license',"
+        "    {email: f.email.value, plan_id: f.plan_id.value});"
+        "  const box = document.getElementById('newkey');"
+        "  box.style.display = 'block';"
+        "  if (b.ok) {"
+        "    document.getElementById('keyval').textContent ="
+        "      b.license_key;"
+        "    document.getElementById('keymeta').textContent ="
+        "      b.plan_name + ' — expires ' +"
+        "      (b.expires_at || 'never') + ' — for ' + b.email;"
+        "    document.getElementById('keyerr').textContent = '';"
+        "  } else {"
+        "    document.getElementById('keyval').textContent = '';"
+        "    document.getElementById('keymeta').textContent = '';"
+        "    document.getElementById('keyerr').textContent ="
+        "      'Error: ' + (b.error || 'failed');"
+        "  }"
+        "});"
+        "function copyKey() {"
+        "  const k = document.getElementById('keyval').textContent;"
+        "  if (navigator.clipboard) { navigator.clipboard.writeText(k); }"
+        "}"
+        "document.querySelectorAll('button.revoke').forEach((btn) => {"
+        "  btn.addEventListener('click', async () => {"
+        "    if (!confirm('Revoke license ' + btn.dataset.key + '?'))"
+        "      return;"
+        "    const b = await postJSON('/api/admin/revoke-license',"
+        "      {license_key: btn.dataset.key});"
+        "    if (b.ok) { location.reload(); }"
+        "    else { alert('Error: ' + (b.error || 'failed')); }"
+        "  });"
+        "});"
+        "</script>"
+        "</body></html>"
+        % (total_accounts, trial_only, licensed, trial_used,
+           plan_options, _esc(query), len(shown), total_accounts,
+           "".join(user_rows), "".join(lic_rows)))
+
+
+@app.route("/api/admin/create-license", methods=["POST"])
+def admin_create_license():
+    guard = _require_admin()
+    if guard is not None:
+        return guard
+    data = request.get_json(silent=True) or {}
+    email = _norm_email(data.get("email"))
+    plan = plan_by_id((data.get("plan_id") or "").strip())
+    if not EMAIL_RE.match(email) or plan is None:
+        return jsonify({"ok": False,
+                        "error": "invalid_request"}), 400
+    conn = db()
+    try:
+        lic = create_license(conn, email, plan,
+                             stripe_session_id=None)
+    finally:
+        conn.close()
+    print("INFO: manual license %s (%s) created for %s by admin"
+          % (lic["license_key"], plan["id"], email))
+    return jsonify({"ok": True, "license_key": lic["license_key"],
+                    "plan": lic["plan_id"],
+                    "plan_name": lic.get("plan_name"),
+                    "expires_at": lic["expires_at"],
+                    "email": email})
+
+
+@app.route("/api/admin/revoke-license", methods=["POST"])
+def admin_revoke_license():
+    guard = _require_admin()
+    if guard is not None:
+        return guard
+    data = request.get_json(silent=True) or {}
+    key = _norm_key(data.get("license_key"))
+    if not key:
+        return jsonify({"ok": False,
+                        "error": "invalid_request"}), 400
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM licenses WHERE "
+            "REPLACE(REPLACE(UPPER(license_key), '-', ''), ' ', '')"
+            " = ?", (key,)).fetchone()
+        if row is None:
+            return jsonify({"ok": False,
+                            "error": "invalid_key"}), 404
+        now_iso = _iso(_now())
+        conn.execute("UPDATE licenses SET expires_at = ? "
+                     "WHERE id = ?", (now_iso, row["id"]))
+        conn.commit()
+    finally:
+        conn.close()
+    print("INFO: license %s (%s) revoked by admin"
+          % (row["license_key"], row["email"]))
+    return jsonify({"ok": True, "license_key": row["license_key"],
+                    "email": row["email"], "expires_at": now_iso})
+
+
+@app.route("/api/admin/export")
+def admin_export():
+    guard = _require_admin()
+    if guard is not None:
+        return guard
+    conn = db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM accounts ORDER BY created_at DESC"
+            ).fetchall()
+        out = io.StringIO()
+        w = csv.writer(out)
+        w.writerow(["email", "machine_id", "device_name", "credits",
+                    "plan", "plan_name", "expires_at", "status",
+                    "created_at", "updated_at"])
+        for a in rows:
+            lic = find_license_for_email(conn, a["email"])
+            if lic:
+                plan = lic["plan_id"]
+                plan_name = lic["plan_name"] or ""
+                exp = lic["expires_at"] or ""
+                status = _license_status_label(lic)
+            else:
+                plan = plan_name = exp = ""
+                status = "trial"
+            w.writerow([a["email"], a["machine_id"],
+                        a["device_name"] or "", a["credits"],
+                        plan, plan_name, exp, status,
+                        a["created_at"], a["updated_at"]])
+        data = out.getvalue()
+    finally:
+        conn.close()
+    fname = ("listing-matcher-users-%s.csv"
+             % _now().strftime("%Y-%m-%d"))
+    return Response(data, mimetype="text/csv",
+                    headers={"Content-Disposition":
+                             "attachment; filename=%s" % fname})
 
 
 # ------------------------------------------------------------------

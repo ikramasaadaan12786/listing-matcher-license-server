@@ -172,3 +172,115 @@ simpler.
 - Trial credits live only in the server DB (Render free is
   ephemeral — a wipe resets trial credits; paid licenses are
   restored from Stripe).
+
+---
+
+# License Server — Build Report v1.1.0 (admin panel, 2026-10-28)
+
+## What was added (SPEC §5b)
+
+Admin panel on the same Flask server — the owner sees every
+user and can create a license manually when someone pays
+outside Stripe (cash / bank transfer).
+
+- `GET /admin` — dashboard: stats row (total accounts,
+  trial-only, licensed, trial credits used = 5 − credits left
+  summed), users table (email, machine/device, credits left,
+  license plan + expiry + status, signup date, last update),
+  search by email, newest first, capped at 500 rows; licenses
+  table with a Revoke button per license; create-license form
+  (email + plan dropdown) that shows the generated key BIG
+  with a Copy button. All user-derived values HTML-escaped.
+- `POST /admin/login` — form or JSON `{password}`; password
+  checked with `hmac.compare_digest` against the
+  `ADMIN_PASSWORD` env var; sets a signed Flask session cookie
+  (`app.secret_key` from optional `SESSION_SECRET` env, random
+  per-boot fallback; HttpOnly + SameSite=Lax). Wrong password
+  → 401, no hint. `GET /admin/logout` clears the session.
+  When `ADMIN_PASSWORD` is unset, `/admin` returns 404.
+- `POST /api/admin/create-license {email, plan_id}` — admin
+  session required; reuses `create_license()` with
+  `stripe_session_id=None`, so the key activates exactly like
+  a Stripe license. No account needs to exist first.
+- `POST /api/admin/revoke-license {license_key}` — admin
+  session required; sets `expires_at` to now, so `/api/activate`
+  and `/api/status` report `expired`.
+- `GET /api/admin/export` — admin session required; CSV of all
+  accounts + their license (email, machine, device, credits,
+  plan, expiry, status, created_at, updated_at).
+- No existing endpoint's contract or behaviour was changed.
+  No new dependency (Flask session only). No password or
+  secret is ever logged or returned.
+
+## Local test results — 25/25 admin + 32/32 regression
+
+`python3 tests/test_admin.py` (starts its own servers on
+scratch DBs): admin off → 404 (page + API); login form when
+not authed; create-license/export without login → 401; wrong
+password → 401 (JSON + form); correct password → ok (JSON +
+form); dashboard renders; signup → 5 credits; dashboard
+search shows the user; manual license created (LM-… + expiry);
+invalid email/plan → 400; dashboard lists the key; export CSV
+contains the user; manual key activates on machine A; status
+licensed; revoke unknown key → 404; revoke → ok; revoked key
+activate → `expired`; status shows expired; logout → login
+form again; create-license after logout → 401. **25 passed,
+0 failed.**
+Regression: `tests/test_api.py` against a server started WITH
+`ADMIN_PASSWORD` set — **32 passed, 0 failed** (version check
+updated to 1.1.0). Gunicorn boot (the Render start command)
+verified: `/api/health` → 1.1.0, login + dashboard render.
+
+## Deploy — pushed to master (Render auto-deploys)
+
+Commit `v1.1.0: admin panel — user management + manual
+licenses` pushed to `master`. Render auto-deploys on push.
+**The redeploy WIPES the ephemeral free-plan DB** — the live
+DB currently holds no real users (only test data at most), so
+that is acceptable. After the deploy the owner must set
+`ADMIN_PASSWORD` on Render (Service → Environment → add the
+variable, any long random string he picks — never in chat)
+and redeploy; until then `/admin` returns 404.
+
+**Manual-license warning (new):** a Stripe license survives
+a DB wipe (Stripe is the source of truth). A manual license
+does NOT — it lives only in the server DB. If the disk wipes,
+manual licenses must be re-created with NEW keys and sent to
+the customers again. The CSV export is the backup. This is
+one more reason to decide the persistence fork (Turso free DB
+vs Render paid disk) — see the parent's note.
+
+## What I could NOT verify (honest gaps)
+
+- **Live admin login on Render** — no browser here; the
+  parent must open
+  `https://listing-matcher-license-server.onrender.com/admin`
+  after the deploy + `ADMIN_PASSWORD` and sign in once.
+- **Live manual-license activation from a real app** — the
+  key activates through the same `/api/activate` code path
+  the Stripe keys use (tested locally 25/25), but no real
+  phone/desktop has run it yet.
+- **Session survival across a Render restart** — unless the
+  owner sets `SESSION_SECRET`, a restart generates a new
+  signing key and the admin just logs in again (by design).
+
+## Notes for the parent (answers to the owner's questions)
+
+- **Stripe key paste spot:** Render Dashboard → service
+  `listing-matcher-license-server` → **Environment** → add
+  `STRIPE_SECRET_KEY` (the owner already did this himself at
+  22:05 — browser-verified, both vars listed). `ADMIN_PASSWORD`
+  goes in the exact same place (Service → Environment → Add
+  environment variable). No browser task is needed from me
+  for this — it is the owner's own dashboard step.
+- **Automatic license on payment? YES — already live.**
+  Customer pays via a Stripe payment link → Stripe fires
+  `checkout.session.completed` → the webhook (endpoint
+  `we_1UVZHrCAFAZd2QaF2vxlY2Zv`, verified enabled) creates
+  the license automatically and the success page shows the
+  key. The owner does NOT have to generate anything. The
+  manual-license flow in this panel is ONLY for payments
+  outside Stripe (cash / bank transfer).
+- **User data:** the admin panel shows every account + license
+  (see §5b); the CSV export is the full list for the owner's
+  records.

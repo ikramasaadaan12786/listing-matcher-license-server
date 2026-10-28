@@ -79,7 +79,7 @@ def main():
     s, b = call("GET", "/api/health")
     check("health ok", s == 200 and b.get("ok") is True, str(b))
     s, b = call("GET", "/api/version")
-    check("version 1.0.0", s == 200 and b.get("version") == "1.0.0",
+    check("version 1.1.0", s == 200 and b.get("version") == "1.1.0",
           str(b))
     s, b = call("GET", "/api/plans")
     # NOTE: the test server runs with STRIPE_PLANS_JSON env set to

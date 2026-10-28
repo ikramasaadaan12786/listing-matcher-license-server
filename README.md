@@ -22,6 +22,12 @@ for client auto-update.
 | POST | `/api/activate` | `{email, license_key, machine_id}` → bind to one machine |
 | POST | `/api/stripe-webhook` | Stripe `checkout.session.completed` → license |
 | GET | `/success?session_id=` | payment success page, shows the license key |
+| GET | `/admin` | owner panel: user management + manual licenses |
+| POST | `/admin/login` | admin sign-in (form or JSON `{password}`) |
+| GET | `/admin/logout` | sign out |
+| POST | `/api/admin/create-license` | manual license `{email, plan_id}` → `{license_key, ...}` |
+| POST | `/api/admin/revoke-license` | expire a license `{license_key}` |
+| GET | `/api/admin/export` | CSV download of all accounts + licenses |
 
 Rules (SPEC §3–§6): 1 credit per **chargeable** match only —
 the app must never call `/api/consume` for a zero result. A
@@ -51,6 +57,15 @@ Singapore, health check `/api/health`).
    - `STRIPE_PLANS_JSON` — optional. Only if the plans should
      come from an env var instead of `stripe_plans.json` in the
      repo (same JSON shape).
+   - `ADMIN_PASSWORD` — the admin panel password (owner picks
+     it, e.g. a long random string). Required for `/admin` to
+     work at all — without it the panel returns 404. Set it on
+     Render the same way as the keys above. **Never share it
+     in chat.**
+   - `SESSION_SECRET` — optional. Signs the admin session
+     cookie; when unset a random key is generated at boot and
+     admin sessions do not survive a restart (just log in
+     again).
    - No other env vars are needed. `PORT` is set by Render.
 3. Stripe Dashboard → Developers → Webhooks → **Add endpoint**:
    URL `https://<your-service>.onrender.com/api/stripe-webhook`,
@@ -92,6 +107,44 @@ Release assets) or relative `/releases/<file>` paths served by
 this server. License + trial credits survive updates — they live
 on this server, keyed by email + machine_id, not in the install.
 
+## Admin panel (v1.1.0) — user management + manual licenses
+
+Open `https://<your-service>.onrender.com/admin` and sign in
+with the `ADMIN_PASSWORD` you set on Render. (Without that env
+var the page returns 404.)
+
+- **Users:** every account that signed up — email, machine /
+  device, credits left, license (plan + expiry + status:
+  `trial` / `active` / `not_activated` / `expired`), signup
+  date, last update. Search box filters by email. Newest first,
+  capped at 500 rows on screen.
+- **Stats row:** total accounts, trial-only accounts,
+  licensed accounts, trial credits used (5 − credits left,
+  summed over accounts).
+- **Manual license:** for a customer who pays outside Stripe
+  (cash / bank transfer). Enter their email + plan → the panel
+  creates a license with `create_license()` (no Stripe session)
+  and shows the key BIG with a Copy button — send it to the
+  customer. The key activates exactly like a Stripe license:
+  the customer enters their email (or the key) in the app.
+  No account needs to exist first; the license appears in the
+  Licenses table either way.
+- **Revoke:** a Revoke button per license (or
+  `POST /api/admin/revoke-license {license_key}`) expires it
+  immediately — `/api/activate` and `/api/status` then report
+  `expired`.
+- **Export:** "Download users CSV" (`GET /api/admin/export`)
+  downloads all accounts + their license. **This CSV is the
+  backup for manual licenses** — see the warning below.
+
+**Manual-license warning:** a Stripe license survives a DB
+wipe because Stripe is the source of truth. A **manual
+license does NOT** — it lives only in the server DB. If the
+Render free disk wipes, manual licenses are gone and must be
+re-created (with a NEW key — keys cannot be re-issued with
+the same value) and sent to the customers again. Export the
+CSV regularly so you know who holds one.
+
 ## Ephemeral-disk warning (read this)
 
 Render **free** disks are ephemeral: a redeploy/restart can wipe
@@ -115,6 +168,9 @@ DATA_DIR=/tmp/lm_server_test PORT=8399 python3 app.py
 # in another shell:
 STRIPE_WEBHOOK_SECRET=whsec_test_123 python3 tests/test_api.py
 # expect: 32 passed, 0 failed
+# admin tests (start their own servers on scratch DBs):
+python3 tests/test_admin.py
+# expect: 25 passed, 0 failed
 ```
 
 ## Files
@@ -125,4 +181,6 @@ STRIPE_WEBHOOK_SECRET=whsec_test_123 python3 tests/test_api.py
 - `stripe_plans.json` — plans + Price IDs + payment links.
 - `releases/app-version.json` — current client releases.
 - `tests/test_api.py` — local endpoint tests (32 checks).
-- `VERSION` — server version (1.0.0).
+- `tests/test_admin.py` — admin panel tests (25 checks;
+  starts its own servers on scratch DBs).
+- `VERSION` — server version (1.1.0).

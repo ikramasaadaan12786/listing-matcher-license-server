@@ -1,13 +1,6 @@
-PENDING — Render deploy not done yet (see BUILD_REPORT.md).
+https://listing-matcher-license-server.onrender.com
 
-Repo (private, ready): https://github.com/ikramasaadaan12786/listing-matcher-license-server
-Blueprint: render.yaml in the repo (free web service, Singapore, health check /api/health).
+Live since 2026-10-28 19:58 Dubai (Render free, Singapore, service srv-dbh1m5etlv9c73dlampg, Blueprint exs-dbh1lvugekts7393bs60, commit 7a523f8).
+Verified live: /api/health ok:true v1.0.0, /api/version 1.0.0, /api/plans (3 real plans), /api/app-version 0.0.0 (no client builds yet).
 
-To finish (parent agent, browser task, ~2 min):
-1. Render Dashboard -> New + -> Blueprint -> connect the repo above -> Apply.
-2. Service -> Environment -> add STRIPE_SECRET_KEY (owner's rk_live_... key, he sets it himself)
-   and STRIPE_WEBHOOK_SECRET (whsec_... from step 3).
-3. Stripe Dashboard -> Developers -> Webhooks -> Add endpoint:
-   https://<service>.onrender.com/api/stripe-webhook, event checkout.session.completed.
-4. Verify: curl <service>/api/health, /api/plans, /api/version — then replace this file's
-   contents with the live URL, e.g. https://listing-matcher-license-server.onrender.com
+Still pending (owner): STRIPE_SECRET_KEY (owner's rk_live_ key — he sets it on Render himself) and STRIPE_WEBHOOK_SECRET (from the Stripe webhook endpoint for https://listing-matcher-license-server.onrender.com/api/stripe-webhook, event checkout.session.completed).
