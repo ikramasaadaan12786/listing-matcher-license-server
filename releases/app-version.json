@@ -1,8 +1,1 @@
-{
-  "_note": "Current client releases for auto-update. Desktop (Windows + macOS) v1.0.1 shipped 2026-10-28 (engine v2.5.1: distinct ranking scores, 60% price taper). The desktop/APK apps poll GET /api/app-version for updates. Android APK not in this release yet (add the asset, then set android_url).",
-  "version": "1.0.1",
-  "windows_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.1/Listing-Matcher-Setup-1.0.1.exe",
-  "mac_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.1/Listing-Matcher-1.0.1-mac.zip",
-  "mac_arm64_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.1/Listing-Matcher-1.0.1-arm64-mac.zip",
-  "android_url": null
-}
+{"_note":"Current client releases for auto-update. Desktop (Windows + macOS) v1.0.2 shipped 2026-10-28 (engine v2.5.1 + sys.path bootstrap fixing the Windows first-launch engine failure; scores unchanged). The desktop/APK apps poll GET /api/app-version for updates. Android APK not in this release yet (add the asset, then set android_url).","android_url":null,"mac_arm64_url":"https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.2/Listing-Matcher-1.0.2-arm64-mac.zip","mac_url":"https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.2/Listing-Matcher-1.0.2-mac.zip","version":"1.0.2","windows_url":"https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.2/Listing-Matcher-Setup-1.0.2.exe"}
