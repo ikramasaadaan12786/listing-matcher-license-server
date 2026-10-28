@@ -1,1 +1,8 @@
-{"_note":"No client builds shipped yet. The build agent uploads new installers to this server's releases/ folder and updates this file (version + download URLs). URLs may be absolute (e.g. GitHub Release assets) or relative /releases/<file> paths served by this server. The desktop/APK apps poll GET /api/app-version for updates.","android_url":null,"mac_arm64_url":null,"mac_url":null,"version":"0.0.0","windows_url":null}
+{
+  "_note": "Current client releases for auto-update. Desktop (Windows + macOS) v1.0.0 shipped 2026-10-28. The desktop/APK apps poll GET /api/app-version for updates. Android APK not in this release yet (add the asset, then set android_url).",
+  "version": "1.0.0",
+  "windows_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.0/Listing-Matcher-Setup-1.0.0.exe",
+  "mac_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.0/Listing-Matcher-1.0.0-mac.zip",
+  "mac_arm64_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.0/Listing-Matcher-1.0.0-arm64-mac.zip",
+  "android_url": null
+}
