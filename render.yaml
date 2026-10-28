@@ -1,0 +1,10 @@
+# Render Blueprint — Listing Matcher License Server (free web service)
+services:
+  - type: web
+    name: listing-matcher-license-server
+    env: python
+    region: singapore
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    healthCheckPath: /api/health
