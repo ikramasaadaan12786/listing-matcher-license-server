@@ -1,1 +1,8 @@
-{"_note":"Current client releases for auto-update. Desktop (Windows + macOS) v1.0.2 shipped 2026-10-28 (engine v2.5.1 + sys.path bootstrap fixing the Windows first-launch engine failure; scores unchanged). The desktop/APK apps poll GET /api/app-version for updates. Android APK not in this release yet (add the asset, then set android_url).","android_url":null,"mac_arm64_url":"https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.2/Listing-Matcher-1.0.2-arm64-mac.zip","mac_url":"https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.2/Listing-Matcher-1.0.2-mac.zip","version":"1.0.2","windows_url":"https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.2/Listing-Matcher-Setup-1.0.2.exe"}
+{
+  "_note": "Current client releases for auto-update. Desktop (Windows + macOS) v1.0.2 shipped 2026-10-28 (engine v2.5.1 + sys.path bootstrap fixing the Windows first-launch engine failure; scores unchanged). Android APK v1.0.2 shipped 2026-10-28 (engine v2.5.1: 60% price taper + price tie-break; Mimosa 74.58, Camelia 74.54, Santorini distinct best). The desktop/APK apps poll GET /api/app-version for updates.",
+  "android_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.2/Listing_Matcher-1.0.2.apk",
+  "mac_arm64_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.2/Listing-Matcher-1.0.2-arm64-mac.zip",
+  "mac_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.2/Listing-Matcher-1.0.2-mac.zip",
+  "version": "1.0.2",
+  "windows_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.2/Listing-Matcher-Setup-1.0.2.exe"
+}
