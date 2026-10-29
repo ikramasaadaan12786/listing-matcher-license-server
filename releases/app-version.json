@@ -1,16 +1,1 @@
-{
-    "_note": "Current client releases for auto-update. v1.1.0 shipped 2026-10-29: hardened auto-updater (downloads verified by Content-Length + MD5 against the *_md5/*_size fields below, one automatic retry, loud error dialogs once the user commits, engine stopped before install) + in-app Support Assistant (knowledge-base, offline) + WhatsApp support button + premium Dubai-hero theme. Engine still v3.0 (byte-identical to v1.0.3). Desktop (Windows + macOS) and Android poll GET /api/app-version for updates.",
-    "android_md5": "a0c001aae9796d19caa88958f0b471ac",
-    "android_size": 877727,
-    "android_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.1.0/Listing_Matcher-1.1.0.apk",
-    "mac_arm64_md5": "30ebe1793bf85e779305545b80393d8a",
-    "mac_arm64_size": 127710663,
-    "mac_arm64_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.1.0/Listing-Matcher-1.1.0-arm64-mac.zip",
-    "mac_md5": "bd54d1a16a652ef36b45851cb5d0a92c",
-    "mac_size": 131509307,
-    "mac_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.1.0/Listing-Matcher-1.1.0-mac.zip",
-    "version": "1.1.0",
-    "windows_md5": "28620738ae0723a518664c4908170de3",
-    "windows_size": 126421547,
-    "windows_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.1.0/Listing-Matcher-Setup-1.1.0.exe"
-}
+{"_note":"Current client releases for auto-update. v1.2.0 shipped 2026-10-29: owner-list import format (AREA, BUILDING/BUILIDNG, UNITNO, SIZE, ROOMS, OWNER, MOBILE + optional EMAIL/BATHS) ported from the App 27 sidecar to all client engines (desktop, Android, web). Engine matching/credits/updater/Support Assistant/theme unchanged from v1.1.0 (engine still v3.0). Desktop (Windows + macOS) and Android poll GET /api/app-version for updates.","android_md5":"1652e0b5c332c1ed7c0c30aa30a9cb48","android_size":881823,"android_url":"https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.2.0/Listing_Matcher-1.2.0.apk","mac_arm64_md5":"e291b5bcd7f9ce0f26382a208fc124e7","mac_arm64_size":127659963,"mac_arm64_url":"https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.2.0/Listing-Matcher-1.2.0-arm64-mac.zip","mac_md5":"44e128b48b090864310328e2dbfe7871","mac_size":131458607,"mac_url":"https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.2.0/Listing-Matcher-1.2.0-mac.zip","version":"1.2.0","windows_md5":"315730dc6a29cb71e9e8749a8caf29e3","windows_size":129189877,"windows_url":"https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.2.0/Listing-Matcher-Setup-1.2.0.exe"}
