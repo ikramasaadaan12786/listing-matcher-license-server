@@ -1,8 +1,16 @@
 {
-    "_note": "Current client releases for auto-update. Desktop (Windows + macOS) v1.0.3 shipped 2026-10-29 (engine v3.0: DB-only vocabulary, cascade matching + scope_notes, title/specs-only type extraction \u2014 fixes the Business Bay 'NICE phase' failure; adversarial corpus 12/12 on all engines). Android APK v1.0.3 shipped 2026-10-29 (same engine v3.0 Kotlin port, 32/32 unit tests). The desktop/APK apps poll GET /api/app-version for updates.",
-    "android_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.3/Listing_Matcher-1.0.3.apk",
-    "mac_arm64_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.3/Listing-Matcher-1.0.3-arm64-mac.zip",
-    "mac_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.3/Listing-Matcher-1.0.3-mac.zip",
-    "version": "1.0.3",
-    "windows_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.0.3/Listing-Matcher-Setup-1.0.3.exe"
+    "_note": "Current client releases for auto-update. v1.1.0 shipped 2026-10-29: hardened auto-updater (downloads verified by Content-Length + MD5 against the *_md5/*_size fields below, one automatic retry, loud error dialogs once the user commits, engine stopped before install) + in-app Support Assistant (knowledge-base, offline) + WhatsApp support button + premium Dubai-hero theme. Engine still v3.0 (byte-identical to v1.0.3). Desktop (Windows + macOS) and Android poll GET /api/app-version for updates.",
+    "android_md5": "a0c001aae9796d19caa88958f0b471ac",
+    "android_size": 877727,
+    "android_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.1.0/Listing_Matcher-1.1.0.apk",
+    "mac_arm64_md5": "30ebe1793bf85e779305545b80393d8a",
+    "mac_arm64_size": 127710663,
+    "mac_arm64_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.1.0/Listing-Matcher-1.1.0-arm64-mac.zip",
+    "mac_md5": "bd54d1a16a652ef36b45851cb5d0a92c",
+    "mac_size": 131509307,
+    "mac_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.1.0/Listing-Matcher-1.1.0-mac.zip",
+    "version": "1.1.0",
+    "windows_md5": "28620738ae0723a518664c4908170de3",
+    "windows_size": 126421547,
+    "windows_url": "https://github.com/ikramasaadaan12786/listing-matcher-license-server/releases/download/v1.1.0/Listing-Matcher-Setup-1.1.0.exe"
 }
