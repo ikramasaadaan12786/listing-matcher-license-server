@@ -6,7 +6,10 @@
 # auto-generated licenses, and the app-version endpoint for
 # client auto-update.
 #
-# Data model (SQLite, file next to app.py unless DATA_DIR is set):
+# Data model (SQLite file next to app.py unless DATA_DIR is set;
+# or a persistent Turso/libSQL database when TURSO_DATABASE_URL +
+# TURSO_AUTH_TOKEN are set — see the database section and
+# TURSO_MIGRATION.md):
 #   accounts: one row per (email, machine_id) signup. Trial
 #     credits live here only — they are NOT restored from Stripe.
 #   licenses: one row per paid purchase. Keyed by license_key,
@@ -147,9 +150,135 @@ def plan_by_id(plan_id):
 
 # ------------------------------------------------------------------
 # database
+#
+# Two backends, chosen purely by env at boot:
+#   * default — local SQLite file (DB_PATH). Unchanged behaviour.
+#   * Turso (libSQL) — when BOTH TURSO_DATABASE_URL and
+#     TURSO_AUTH_TOKEN are set. Render's free disk is ephemeral
+#     (a redeploy wiped every account/license on 2026-10-29), so
+#     production points the server at a persistent Turso database;
+#     the SQLite file stays the fallback for local runs/tests.
+# The switch lives ONLY in db() below: the libsql client returns
+# plain tuple rows, so a thin shim (_DictRow/_TursoCursor/
+# _TursoConnection) gives its connections the exact sqlite3
+# surface the rest of this file uses — conn.execute(sql, params)
+# with ? placeholders, fetchone()/fetchall(), cur.lastrowid,
+# executescript(), commit()/close(), and rows that support
+# row["col"] and dict(row) like sqlite3.Row. No endpoint code
+# knows (or cares) which backend served it.
 # ------------------------------------------------------------------
 
+TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "").strip()
+TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
+USE_TURSO = bool(TURSO_DATABASE_URL and TURSO_AUTH_TOKEN)
+
+
+class _DictRow:
+    """sqlite3.Row stand-in built from a libsql tuple row.
+
+    Supports the two access patterns this codebase uses:
+    row["column"] (and row[index]) and dict(row) via keys().
+    Iterating yields values, like sqlite3.Row."""
+
+    __slots__ = ("_cols", "_vals", "_map")
+
+    def __init__(self, cols, vals):
+        self._cols = tuple(cols)
+        self._vals = tuple(vals)
+        self._map = dict(zip(self._cols, self._vals))
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return self._map[key]
+        return self._vals[key]
+
+    def keys(self):
+        return list(self._cols)
+
+    def __iter__(self):
+        return iter(self._vals)
+
+    def __len__(self):
+        return len(self._vals)
+
+    def __repr__(self):
+        return "_DictRow(%r)" % (self._map,)
+
+
+class _TursoCursor:
+    """Wraps a libsql cursor so fetched rows come back as
+    _DictRow instead of plain tuples."""
+
+    def __init__(self, cur):
+        self._cur = cur
+        desc = cur.description
+        self._cols = [d[0] for d in desc] if desc else []
+
+    def fetchone(self):
+        row = self._cur.fetchone()
+        return None if row is None else _DictRow(self._cols, row)
+
+    def fetchall(self):
+        return [_DictRow(self._cols, r) for r in self._cur.fetchall()]
+
+    def fetchmany(self, size=None):
+        rows = (self._cur.fetchmany() if size is None
+                else self._cur.fetchmany(size))
+        return [_DictRow(self._cols, r) for r in rows]
+
+    def __iter__(self):
+        return (_DictRow(self._cols, r) for r in self._cur)
+
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+    @property
+    def description(self):
+        return self._cur.description
+
+
+class _TursoConnection:
+    """Wraps a libsql connection with the sqlite3 connection
+    surface this file uses (execute/executescript/commit/
+    rollback/close). Parameters pass straight through: libsql
+    accepts the same ? placeholders and tuple params."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def execute(self, sql, params=()):
+        return _TursoCursor(self._raw.execute(sql, params))
+
+    def cursor(self):
+        return _TursoCursor(self._raw.cursor())
+
+    def executescript(self, script):
+        return self._raw.executescript(script)
+
+    def commit(self):
+        return self._raw.commit()
+
+    def rollback(self):
+        return self._raw.rollback()
+
+    def close(self):
+        return self._raw.close()
+
+
 def db():
+    if USE_TURSO:
+        # Imported lazily so the default SQLite path (local dev,
+        # the test suite) never requires the libsql package.
+        import libsql
+        url = TURSO_DATABASE_URL
+        token = TURSO_AUTH_TOKEN
+        return _TursoConnection(libsql.connect(
+            database=url, auth_token=token))
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     return conn
