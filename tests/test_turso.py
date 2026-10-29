@@ -9,7 +9,7 @@ owner's Turso database exists:
   python3 tests/test_turso.py
 
 What it proves, through the app's own db() layer (never raw
-libsql): the server really selected the Turso backend, the
+HTTP): the server really selected the Turso backend, the
 schema exists (init_db at import + here), an account and a
 license can be inserted and read back with the exact access
 patterns the endpoints use (row["col"], dict(row), fetchall,
@@ -17,10 +17,15 @@ cursor.lastrowid), and the test rows can be deleted again.
 Cleanup is scoped to one throwaway email, so it is safe to run
 against the production Turso database.
 
-The same test doubles as a local libsql-path check: point
-TURSO_DATABASE_URL at a local file path (any non-empty token)
-and it exercises the identical code path without a Turso
-account.
+The same test runs fully offline against the local fake of
+the pipeline endpoint (backed by a real sqlite file):
+
+  python3 tests/fake_turso.py 8431 /tmp/fake_turso.db &
+  TURSO_DATABASE_URL=http://127.0.0.1:8431 TURSO_AUTH_TOKEN=x \
+    python3 tests/test_turso.py
+
+(tests/test_turso_gunicorn.py drives the fake + real gunicorn
+together for the hang regression test.)
 """
 import os
 import sys

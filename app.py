@@ -153,28 +153,62 @@ def plan_by_id(plan_id):
 #
 # Two backends, chosen purely by env at boot:
 #   * default — local SQLite file (DB_PATH). Unchanged behaviour.
-#   * Turso (libSQL) — when BOTH TURSO_DATABASE_URL and
-#     TURSO_AUTH_TOKEN are set. Render's free disk is ephemeral
-#     (a redeploy wiped every account/license on 2026-10-29), so
-#     production points the server at a persistent Turso database;
-#     the SQLite file stays the fallback for local runs/tests.
-# The switch lives ONLY in db() below: the libsql client returns
-# plain tuple rows, so a thin shim (_DictRow/_TursoCursor/
-# _TursoConnection) gives its connections the exact sqlite3
-# surface the rest of this file uses — conn.execute(sql, params)
-# with ? placeholders, fetchone()/fetchall(), cur.lastrowid,
-# executescript(), commit()/close(), and rows that support
-# row["col"] and dict(row) like sqlite3.Row. No endpoint code
-# knows (or cares) which backend served it.
+#   * Turso — when BOTH TURSO_DATABASE_URL and TURSO_AUTH_TOKEN
+#     are set. Render's free disk is ephemeral (a redeploy wiped
+#     every account/license on 2026-10-29), so production points
+#     the server at a persistent Turso database; the SQLite file
+#     stays the fallback for local runs/tests.
+#
+# The Turso backend talks to Turso's HTTP pipeline API
+# (POST /v2/pipeline, Hrana over plain HTTPS) with the standard
+# library only — NO native libsql client. The native client
+# shipped in f33e92c deadlocked in production: its Rust/tokio
+# runtime hung the single gunicorn sync worker on DB requests
+# ("WORKER TIMEOUT" -> SIGKILL; tokio panic "failed to join
+# thread: Resource deadlock avoided"), producing 502 windows
+# while /api/health (which touches no DB) kept answering.
+# Plain HTTP has no native runtime to deadlock, and every call
+# carries a hard 10s timeout plus one retry on network errors,
+# so a slow Turso response can never hang a worker indefinitely.
+#
+# The switch lives ONLY in db() below: _TursoHttpConnection /
+# _TursoHttpCursor give the HTTP backend the exact sqlite3
+# surface the rest of this file uses — conn.execute(sql,
+# params) with ? placeholders, fetchone()/fetchall(),
+# cur.lastrowid, executescript(), commit()/close(), and rows
+# that support row["col"] and dict(row) like sqlite3.Row (via
+# _DictRow). No endpoint code knows which backend served it.
+#
+# Transaction semantics: the HTTP API is stateless and every
+# statement auto-commits, so commit()/rollback() are no-ops on
+# this backend. Every multi-statement flow was reviewed for
+# autocommit safety (2026-10-29):
+#   * webhook: the webhook_events marker is inserted AFTER the
+#     license is created, and create_license is idempotent on
+#     stripe_session_id (SELECT-first + UNIQUE column), so a
+#     crash/retry between the two inserts replays safely.
+#   * create_license: SELECT existing -> INSERT -> SELECT by
+#     key; statements from one connection run sequentially and
+#     Turso reads observe this client's prior writes in order.
+#   * signup / consume / activate / revoke: check-then-write
+#     pairs with the same shape (and the same single-worker
+#     serialisation) as the SQLite path; the schema's UNIQUE
+#     constraints still guard the races that matter.
 # ------------------------------------------------------------------
+
+import base64
+import urllib.error
+import urllib.request
 
 TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "").strip()
 TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
 USE_TURSO = bool(TURSO_DATABASE_URL and TURSO_AUTH_TOKEN)
 
+_TURSO_HTTP_TIMEOUT = 10  # seconds, per pipeline HTTP call
+
 
 class _DictRow:
-    """sqlite3.Row stand-in built from a libsql tuple row.
+    """sqlite3.Row stand-in built from a result tuple row.
 
     Supports the two access patterns this codebase uses:
     row["column"] (and row[index]) and dict(row) via keys().
@@ -205,84 +239,246 @@ class _DictRow:
         return "_DictRow(%r)" % (self._map,)
 
 
-class _TursoCursor:
-    """Wraps a libsql cursor so fetched rows come back as
-    _DictRow instead of plain tuples."""
+def _turso_http_base(url):
+    """libsql://<host> -> https://<host>. An http(s):// URL
+    passes through unchanged (http:// is used only by the local
+    fake-Turso test stub)."""
+    u = (url or "").strip()
+    if u.startswith("libsql://"):
+        u = "https://" + u[len("libsql://"):]
+    return u.rstrip("/")
 
-    def __init__(self, cur):
-        self._cur = cur
-        desc = cur.description
-        self._cols = [d[0] for d in desc] if desc else []
+
+def _turso_encode_arg(value):
+    """Python value -> Hrana typed value. Integers travel as
+    strings in this protocol."""
+    if value is None:
+        return {"type": "null"}
+    if isinstance(value, bool):
+        return {"type": "integer", "value": str(int(value))}
+    if isinstance(value, int):
+        return {"type": "integer", "value": str(value)}
+    if isinstance(value, float):
+        return {"type": "float", "value": value}
+    if isinstance(value, (bytes, bytearray)):
+        return {"type": "blob",
+                "value": base64.b64encode(
+                    bytes(value)).decode("ascii")}
+    return {"type": "text", "value": str(value)}
+
+
+def _turso_decode_cell(cell):
+    """Hrana typed cell -> Python value. Integers arrive as
+    strings and must become int again (credits math and id
+    comparisons depend on it)."""
+    cell = cell or {}
+    t = cell.get("type")
+    v = cell.get("value")
+    if t == "null" or v is None:
+        return None
+    if t == "integer":
+        return int(v)
+    if t == "float":
+        return float(v)
+    if t == "blob":
+        return base64.b64decode(v)
+    return v
+
+
+def _turso_pipeline(base, token, statements):
+    """Run a batch of (sql, params) statements through Turso's
+    POST /v2/pipeline endpoint and return the list of
+    per-statement result dicts. A statement error raises the
+    closest sqlite3 error class (so behaviour matches the
+    SQLite backend); a network error is retried exactly once.
+    Every attempt has a hard timeout — this call must never be
+    able to hang a gunicorn worker."""
+    requests = []
+    for sql, params in statements:
+        requests.append({
+            "type": "execute",
+            "stmt": {
+                "sql": sql,
+                "args": [_turso_encode_arg(p) for p in params],
+                "want_rows": True,
+            },
+        })
+    requests.append({"type": "close"})
+    body = json.dumps({"requests": requests}).encode("utf-8")
+    payload = None
+    last_exc = None
+    for _attempt in (1, 2):
+        req = urllib.request.Request(
+            base + "/v2/pipeline", data=body, method="POST")
+        req.add_header("Authorization", "Bearer " + token)
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(
+                    req, timeout=_TURSO_HTTP_TIMEOUT) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            # Turso answered (auth failure, 5xx, ...): a real
+            # response, not a network error — do not retry.
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:200]
+            except Exception:
+                pass
+            raise sqlite3.OperationalError(
+                "Turso HTTP %s: %s" % (exc.code, detail))
+        except Exception as exc:  # URLError / timeout / reset
+            last_exc = exc
+    if payload is None:
+        raise sqlite3.OperationalError(
+            "Turso request failed after one retry: %s" % (last_exc,))
+    results = []
+    for item in payload.get("results") or []:
+        if item.get("type") == "error":
+            err = item.get("error") or {}
+            msg = err.get("message") or "Turso statement error"
+            if "UNIQUE constraint failed" in msg:
+                raise sqlite3.IntegrityError(msg)
+            raise sqlite3.OperationalError(msg)
+        resp_obj = item.get("response") or {}
+        if resp_obj.get("type") == "execute":
+            results.append(resp_obj.get("result") or {})
+    return results
+
+
+class _TursoHttpCursor:
+    """Eager cursor over the HTTP pipeline API: execute() runs
+    the statement immediately (one pipeline POST) and buffers
+    the decoded rows; fetch* walk the buffer, mirroring the
+    sqlite3 cursor surface this file uses."""
+
+    def __init__(self, conn, sql=None, params=()):
+        self._conn = conn
+        self._rows = []
+        self._pos = 0
+        self._cols = []
+        self._lastrowid = None
+        self._rowcount = -1
+        if sql is not None:
+            self._run(sql, params)
+
+    def _run(self, sql, params):
+        results = _turso_pipeline(
+            self._conn._base, self._conn._token,
+            [(sql, tuple(params))])
+        result = results[0] if results else {}
+        self._cols = [c.get("name")
+                      for c in result.get("cols") or []]
+        self._rows = [
+            _DictRow(self._cols,
+                     [_turso_decode_cell(cell) for cell in row])
+            for row in result.get("rows") or []]
+        lid = result.get("last_insert_rowid")
+        self._lastrowid = int(lid) if lid is not None else None
+        if self._cols:
+            self._rowcount = -1  # sqlite3 semantics for SELECT
+        else:
+            arc = result.get("affected_row_count")
+            self._rowcount = arc if arc is not None else -1
+        self._pos = 0
+        return self
+
+    def execute(self, sql, params=()):
+        return self._run(sql, params)
 
     def fetchone(self):
-        row = self._cur.fetchone()
-        return None if row is None else _DictRow(self._cols, row)
+        if self._pos >= len(self._rows):
+            return None
+        row = self._rows[self._pos]
+        self._pos += 1
+        return row
 
     def fetchall(self):
-        return [_DictRow(self._cols, r) for r in self._cur.fetchall()]
+        rows = list(self._rows[self._pos:])
+        self._pos = len(self._rows)
+        return rows
 
     def fetchmany(self, size=None):
-        rows = (self._cur.fetchmany() if size is None
-                else self._cur.fetchmany(size))
-        return [_DictRow(self._cols, r) for r in rows]
+        if size is None:
+            size = 1  # sqlite3's default arraysize
+        rows = list(self._rows[self._pos:self._pos + size])
+        self._pos += len(rows)
+        return rows
 
     def __iter__(self):
-        return (_DictRow(self._cols, r) for r in self._cur)
+        return iter(self.fetchall())
 
     @property
     def lastrowid(self):
-        return self._cur.lastrowid
+        return self._lastrowid
 
     @property
     def rowcount(self):
-        return self._cur.rowcount
+        return self._rowcount
 
     @property
     def description(self):
-        return self._cur.description
+        if not self._cols:
+            return None
+        return [(name, None, None, None, None, None, None)
+                for name in self._cols]
 
 
-class _TursoConnection:
-    """Wraps a libsql connection with the sqlite3 connection
-    surface this file uses (execute/executescript/commit/
-    rollback/close). Parameters pass straight through: libsql
-    accepts the same ? placeholders and tuple params."""
+class _TursoHttpConnection:
+    """sqlite3-connection-shaped wrapper over Turso's HTTP
+    pipeline API. Stateless by design: commit()/rollback()/
+    close() are no-ops because every statement auto-commits
+    (see the transaction review in the section header)."""
 
-    def __init__(self, raw):
-        self._raw = raw
+    def __init__(self, base, token):
+        self._base = base
+        self._token = token
 
     def execute(self, sql, params=()):
-        return _TursoCursor(self._raw.execute(sql, params))
+        return _TursoHttpCursor(self, sql, params)
 
     def cursor(self):
-        return _TursoCursor(self._raw.cursor())
+        return _TursoHttpCursor(self)
 
     def executescript(self, script):
-        return self._raw.executescript(script)
+        # Split into complete statements with the stdlib
+        # completeness check (so a semicolon inside a string
+        # literal could never split a statement in half) and
+        # run them as ONE pipeline batch. Only init_db() uses
+        # this, with plain CREATE TABLE IF NOT EXISTS DDL.
+        statements = []
+        buf = ""
+        for line in script.splitlines(True):
+            buf += line
+            if sqlite3.complete_statement(buf):
+                stmt = buf.strip()
+                if stmt:
+                    statements.append((stmt, ()))
+                buf = ""
+        tail = buf.strip()
+        if tail:
+            statements.append((tail, ()))
+        if statements:
+            _turso_pipeline(self._base, self._token, statements)
+        return _TursoHttpCursor(self)
 
     def commit(self):
-        return self._raw.commit()
+        return None
 
     def rollback(self):
-        return self._raw.rollback()
+        return None
 
     def close(self):
-        return self._raw.close()
+        return None
 
 
 def db():
     if USE_TURSO:
-        # Imported lazily so the default SQLite path (local dev,
-        # the test suite) never requires the libsql package.
-        import libsql
-        url = TURSO_DATABASE_URL
-        token = TURSO_AUTH_TOKEN
-        return _TursoConnection(libsql.connect(
-            database=url, auth_token=token))
+        return _TursoHttpConnection(
+            _turso_http_base(TURSO_DATABASE_URL), TURSO_AUTH_TOKEN)
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     return conn
-
 
 def init_db():
     conn = db()

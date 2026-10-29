@@ -9,11 +9,23 @@ scale. The SQLite file remains the default whenever the Turso
 env vars are absent (local dev, tests).
 
 **How it works:** `app.py`'s `db()` is the only switch point.
-When BOTH env vars below are set it connects to Turso via the
-`libsql` package (a thin shim gives its tuple rows the sqlite3
+When BOTH env vars below are set it talks to Turso over Turso's
+HTTP pipeline API (`POST /v2/pipeline`, plain HTTPS, standard
+library only; a thin shim gives the decoded rows the sqlite3
 `row["col"]` / `dict(row)` surface the code uses); otherwise it
 opens the local SQLite file exactly as before. No endpoint knows
 which backend served it.
+
+> **Transport history (2026-10-29):** the first Turso build
+> (f33e92c) used the native `libsql` package. It deadlocked in
+> production — the client's Rust/tokio runtime hung the single
+> gunicorn sync worker on DB requests ("WORKER TIMEOUT",
+> tokio panic "failed to join thread: Resource deadlock
+> avoided"), causing 502 windows while `/api/health` (no DB)
+> kept answering. The backend now uses the HTTP pipeline API
+> only: no native runtime, a hard 10s timeout + one retry per
+> call, and `tests/test_turso_gunicorn.py` regression-tests the
+> exact hang shape (real gunicorn, 1 sync worker, fake Turso).
 
 ## The switch (owner, on Render)
 
