@@ -86,3 +86,5 @@ Remove the two env vars on Render and save. The server falls
 back to the local SQLite file on the next boot (empty on the
 free plan — i.e. rollback means starting over, so only do it if
 Turso itself is the problem).
+
+<!-- redeploy survival test: 2026-10-29 -->
